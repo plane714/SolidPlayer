@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        窗口层配色。
+
+        这些值只服务「Activity 窗口自己画的那几块像素」：状态栏/导航栏底色，以及
+        Compose 首帧之前的 windowBackground。内容的真源仍然是 ui/theme/Theme.kt 的
+        LightColors/DarkColors —— 两边必须保持一致，否则会出现状态栏与内容区
+        颜色对不上、或冷启动闪一下异色。
+
+        深色值见 values-night/colors.xml。
+    -->
+    <color name="app_window_background">#FFF7F8FB</color>
+</resources>

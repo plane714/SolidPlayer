@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    自适应图标前景层：红色感叹号（居中，总高 52dp / 108dp 画布）。
+
+    几何逐点取自源图 9802.jpg 的实测值。源图 2560x1440，红色图案的紧致包围盒是
+    171x687（像素），底色 #F8F8F8，图案色 #FD3736。映射到本 108x108 视口：
+
+        x' = 54 + (x - 85.5) * s
+        y' = 54 + (y - 343.5) * s        s = 52 / 687
+
+    即图案总高 52dp、中心落在 (54,54)。选 52dp（可见安全圆 66dp 的 79%）是因为图案
+    极瘦（宽高比 0.25），按 66dp 的"垂直矩形"关键线顶格放会几乎贴住圆形遮罩的上下边。
+
+    竖条是六边形（直边到 y=55.89 后向内收窄），圆点是矩形，与源图逐点对应。
+    前景层还被 anydpi-v26 的 <monochrome> 复用（Android 13+ 主题图标），
+    所以必须是实心单色形状 —— 不要加渐变或半透明。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 竖条 -->
+    <path
+        android:fillColor="#FD3736"
+        android:pathData="M47.53,28 L60.47,28 L60.47,55.89 L57.75,67.17 L50.25,67.17 L47.53,55.89 Z" />
+
+    <!-- 下方圆点 -->
+    <path
+        android:fillColor="#FD3736"
+        android:pathData="M48.51,70.12 L59.49,70.12 L59.49,79.96 L48.51,79.96 Z" />
+</vector>

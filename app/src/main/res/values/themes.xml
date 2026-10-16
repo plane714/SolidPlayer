@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Compose 应用只需一个无 ActionBar 的基础主题；具体配色在 Theme.kt 里定义。
+
+        但状态栏/导航栏的「图标明暗」是系统按**窗口主题**判断的，Compose 的
+        MaterialTheme 改不到它。所以这里必须跟浅/深色对齐：
+
+        - parent 用 **Light** 基底 + windowLightStatusBar=true，浅色模式才会画深色图标。
+          之前是 `android:Theme.Material.NoActionBar`（暗色基底）→ windowLightStatusBar
+          默认 false → 状态栏图标永远是白色；在 Android 15+ 强制 edge-to-edge 的
+          白色内容上直接隐形（只看得见彩色的通知图标）。
+        - windowBackground 跟 Theme.kt 的 background 同色，避免冷启动先闪一帧黑。
+
+        深色模式走 values-night/themes.xml。
+        另外：切系统深浅色时 Activity 因 configChanges 含 uiMode 不会重建、这份 XML 不会
+        重载，所以 Theme.kt 里还有一道运行时同步兜底。
+    -->
+    <style name="Theme.SolidPlayer" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/app_window_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

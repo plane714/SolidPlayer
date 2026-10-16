@@ -1,0 +1,35 @@
+*.iml
+/local.properties
+local.properties
+
+# Gradle / Kotlin 构建产物
+.gradle
+build/
+.kotlin
+
+# IDE
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+
+# 原生构建
+.externalNativeBuild
+.cxx
+/captures
+
+# 打包产物（APK/AAB 体积大，不入库；需要留存请用 Release 附件）
+dist/
+*.apk
+*.aab
+
+# 密钥库（发布签名，绝不入库）
+*.jks
+*.keystore
+
+# 临时文件
+.workbuddy/tmp/
+*.log
+.DS_Store

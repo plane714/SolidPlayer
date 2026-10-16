@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    自适应图标背景层：整块纯色，取自源图 9802.jpg 的底色（#F8F8F8）。
+
+    108x108 必须画满 —— 启动器会按圆形 / 圆角矩形 / 方形等各种遮罩裁切中心 66~72dp，
+    背景层只要留一点空隙就会在遮罩边缘露出透明。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#F8F8F8"
+        android:pathData="M0,0h108v108h-108z" />
+</vector>

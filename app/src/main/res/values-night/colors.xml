@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 对应 Theme.kt 的 DarkColors.background，避免深色下先闪一帧浅色。 -->
+    <color name="app_window_background">#FF101216</color>
+</resources>

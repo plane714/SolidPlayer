@@ -1,0 +1,20 @@
+# 默认文本自动识别，并在工作区统一使用 LF
+# （本仓库现有文件全部为 LF；锁定 eol 可避免 Windows 上 checkout 后出现全量换行符改动）
+* text=auto eol=lf
+
+# Windows 批处理保持 CRLF（cmd.exe 解析 LF 换行的 .bat 在多行标签结构下可能出错）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不做任何转换
+*.jar binary
+*.apk binary
+*.aab binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ttf binary
+*.otf binary
+*.jks binary
+*.keystore binary
