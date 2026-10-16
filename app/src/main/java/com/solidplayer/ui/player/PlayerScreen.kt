@@ -157,10 +157,19 @@ private const val COMPACT_WIDTH_DP = 600
  * 默认 [FOLLOW]：**不强制旋转**。竖屏视频、录屏、竖屏短视频在这个 App 的目标里占相当比例，
  * 一进页就锁横屏会把它们压在屏幕中间一条。用户想锁的时候顶栏按钮循环切换。
  *
- * `FOLLOW` 用 `SENSOR` 而不是 `UNSPECIFIED`：后者的实际行为取决于系统的「自动旋转」开关，
- * 开关关掉时横放手机也不会横过来 —— 那就不叫「跟随手机」了。
+ * `FOLLOW` 用 `UNSPECIFIED` 而不是 `SENSOR`：两者的区别只在**系统方向锁定**（「自动旋转」
+ * 开关 / 快捷开关）打开时 —— `SENSOR` 的官方定义明确写着「Ignores user's setting to turn off
+ * sensor-based rotation」，即无视用户锁定的方向照转；`UNSPECIFIED` 则尊重它：
+ * 锁定开着就跟随当前锁定方向，关掉才按传感器来。**锁定是用户的显式表达，不该被播放页推翻**，
+ * 所以这里选后者。
+ *
+ * 代价是「锁着竖屏横放手机看横屏片」不会自动横过来 —— 那正是顶栏那个按钮存在的意义：
+ * 想要横屏就点一下（[LANDSCAPE]），而不是替用户决定「锁定不算数」。
+ *
+ * `internal` 而不是 `private`：常量映射是「刻意反选」过的一条判据（P10 之前用的是 `SENSOR`），
+ * 抽出来给 [OrientationModeTest] 钉住，避免以后再被改回去。
  */
-private enum class OrientationMode {
+internal enum class OrientationMode {
     FOLLOW,
     LANDSCAPE,
     PORTRAIT,
@@ -175,7 +184,7 @@ private enum class OrientationMode {
     /** 交给 `Activity.requestedOrientation` 的系统常量。 */
     val activityOrientation: Int
         get() = when (this) {
-            FOLLOW -> ActivityInfo.SCREEN_ORIENTATION_SENSOR
+            FOLLOW -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         }
@@ -192,9 +201,9 @@ private val OrientationMode.icon: ImageVector
 /** 无文字按钮，图标必须自己说清楚「现在是什么状态 + 点一下会怎样」。 */
 private val OrientationMode.description: String
     get() = when (this) {
-        OrientationMode.FOLLOW -> "方向跟随手机，点击锁定横屏"
+        OrientationMode.FOLLOW -> "方向跟随系统，点击锁定横屏"
         OrientationMode.LANDSCAPE -> "已锁定横屏，点击改为锁定竖屏"
-        OrientationMode.PORTRAIT -> "已锁定竖屏，点击改回跟随手机"
+        OrientationMode.PORTRAIT -> "已锁定竖屏，点击改回跟随系统"
     }
 
 /**
@@ -282,9 +291,9 @@ private val PanelSwitchColors
  * - 拖动进度条：拖动中只更新画面上的数字，松手才真正 seek
  *   （每拖一像素就 seek 一次会让播放器持续重建缓冲区，表现为卡顿）
  *
- * 方向**不强制旋转**：默认跟随手机（竖屏视频、录屏在竖屏下才不被压成中间一条），
- * 顶栏按钮可循环「跟随 → 锁横屏 → 锁竖屏」。窄屏（低于 [COMPACT_WIDTH_DP]）下
- * 上下控制栏整体收紧一档，五个控件才在一行里排得开。
+ * 方向**不强制旋转**：默认跟随系统（系统方向锁定开着就不转，关着才按传感器；
+ * 竖屏视频、录屏在竖屏下才不被压成中间一条），顶栏按钮可循环「跟随 → 锁横屏 → 锁竖屏」。
+ * 窄屏（低于 [COMPACT_WIDTH_DP]）下上下控制栏整体收紧一档，五个控件才在一行里排得开。
  */
 @Composable
 fun PlayerScreen(
@@ -316,7 +325,7 @@ fun PlayerScreen(
     var accelerating by remember { mutableStateOf(false) }
     /** 横滑调进度的浮层内容；null 表示当前没在横滑 */
     var seekPreview by remember { mutableStateOf<SeekPreview?>(null) }
-    /** 方向策略；默认跟随手机，不强制旋转 */
+    /** 方向策略；默认跟随系统（尊重系统方向锁定），不强制旋转 */
     var orientationMode by remember { mutableStateOf(OrientationMode.FOLLOW) }
 
     /**
@@ -364,10 +373,13 @@ fun PlayerScreen(
         }
     }
 
-    // 方向：默认跟随手机，顶栏按钮可在「跟随 → 锁横 → 锁竖」之间循环。
+    // 方向：默认跟随系统，顶栏按钮可在「跟随 → 锁横 → 锁竖」之间循环。
+    //
+    // 默认态下发的是 UNSPECIFIED：**尊重**系统的方向锁定开关（锁定开着就不转，
+    // 关掉才按传感器）。两个锁档则是显式的，用户点了才生效。
     //
     // 翻转**不会重建 Activity**：manifest 的 `configChanges` 已含 `orientation|screenSize`，
-    // 所以转手机时画面、播放进度、弹幕时间轴都不会断 —— 这正是能用 SENSOR 跟随的前提。
+    // 所以转手机时画面、播放进度、弹幕时间轴都不会断。
     LaunchedEffect(orientationMode) {
         activity?.requestedOrientation = orientationMode.activityOrientation
     }

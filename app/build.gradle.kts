@@ -13,8 +13,8 @@ android {
         applicationId = "com.solidplayer"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 11
-        versionName = "0.5.1-p9"
+        versionCode = 12
+        versionName = "0.5.1-p10"
     }
 
     buildFeatures {

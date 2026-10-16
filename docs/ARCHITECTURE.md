@@ -1587,6 +1587,11 @@ DB 升到 **version 2**，`media_file` 增加六列：
 3. 文件列表支持**下拉刷新扫描**；
 4. 扫描**只在「每次进入软件」与「手动下拉」时进行**。
 
+> **⚠️ §28（P10）起本节的方向结论已被修正**：默认态由 `SENSOR` 改为 `UNSPECIFIED`。
+> `SENSOR` 的官方定义是「Ignores user's setting to turn off sensor-based rotation」——
+> 它**无视**用户的旋转锁定；`UNSPECIFIED` 才尊重。下面的表格保留当时原文，
+> 实际行为以 §28 为准。
+
 ### 20.1 播放页方向：默认跟随手机
 
 原来 `PlayerScreen` 一进来就把 `landscape = true` → `SCREEN_ORIENTATION_SENSOR_LANDSCAPE`，
@@ -1598,19 +1603,20 @@ DB 升到 **version 2**，`media_file` 增加六列：
 （`ScreenRotation` / `StayCurrentLandscape` / `StayCurrentPortrait`）——
 无文字按钮只能靠 `contentDescription` 同时说清「现在是什么状态」与「点一下会怎样」。
 
-| 取向 | 常量 | 理由 |
+| 取向 | 常量（§28 修正后） | 理由 |
 |---|---|---|
-| 跟随（默认） | `SCREEN_ORIENTATION_SENSOR` | 纯按传感器，横放就横屏、竖立就竖屏 |
+| 跟随（默认） | `SCREEN_ORIENTATION_UNSPECIFIED` | 交给系统：锁定开着就不转，关掉才按传感器 |
 | 锁定横屏 | `SENSOR_LANDSCAPE` | 用户显式要横屏（躺床上看等场景） |
 | 锁定竖屏 | `SENSOR_PORTRAIT` | 用户显式要竖屏 |
 | 退出页面 | `UNSPECIFIED` | 交给系统，媒体库页继续跟随系统「自动旋转」开关 |
 
-**刻意不用 `UNSPECIFIED` 做「跟随」**：它的实际行为取决于系统的「自动旋转」开关 ——
-开关关掉时横放手机也不会横过来，那就不叫「跟随手机」了。
+**~~刻意不用 `UNSPECIFIED` 做「跟随」~~（§28 已推翻）**：当时的理由是「开关关掉时横放手机
+也不会横过来，那就不叫『跟随手机』了」。这句话本身没错，但它把**用户的旋转锁定**当成了
+要绕开的障碍 —— 锁定是用户自己开的，播放页没有理由替他推翻。详见 §28。
 
 **转手机不会重建 Activity**：manifest 的 `configChanges` 已含 `orientation|screenSize|screenLayout|…`，
 所以翻转时画面、播放进度、弹幕时间轴都不会断（`SolidPlayer` 与弹幕引擎都是 `remember` 的）。
-这正是敢用 `SENSOR` 的前提 —— 否则每次转屏都会重建播放器，表现为黑一下再从头开始。
+这正是敢用传感器类常量的前提 —— 否则每次转屏都会重建播放器，表现为黑一下再从头开始。
 
 系统栏仍然隐藏（沉浸式），竖屏也一样：这是一块以「看」为主的页面。
 
@@ -2385,3 +2391,80 @@ P8 把弹菜单只写在 `onDragCancel` 里，于是那段代码在执行路径�
 - 改动面：`core/danmaku/.../model/DanmakuConfig.kt`、`track/TrackAllocator.kt`、
   `render/DanmakuRenderer.kt`、`core/data/.../preference/DanmakuPreferenceCodec.kt` /
   `DanmakuPreferenceStore.kt`、`app/.../ui/player/PlayerViewModel.kt` / `PlayerScreen.kt`
+
+---
+
+## 28. 播放页方向改为尊重系统旋转锁定（2026-10-16，P10）
+
+### 28.1 需求
+
+> 如果手机系统开启了方向锁定，进视频时横竖屏就不要按照传感器来了，但是如果关闭了方向锁定，
+> 就按照传感器来
+
+一句话概括：**播放页不该替用户推翻系统里那个方向锁定开关**。
+
+### 28.2 根因：选错了常量
+
+§20.1 的默认态用的是 `SCREEN_ORIENTATION_SENSOR`，而官方对它的定义是：
+
+> Orientation is determined by a physical orientation sensor: the display will rotate based on how
+> the user moves the device. **Ignores user's setting to turn off sensor-based rotation.**
+
+后半句正是问题所在 —— 它不是「跟随手机」，而是「**无视**用户的锁定、无条件跟传感器」。
+当初选它是因为觉得「锁定开着就对传感器没反应了，那不算跟随手机」（§20.1 原话），
+但那个判断把用户的显式意图当成了要绕开的障碍。
+
+`SCREEN_ORIENTATION_UNSPECIFIED` 的官方定义恰好就是需求原文：
+
+> No preference specified: let the system decide the best orientation. … If the user **explicitly
+> turned off sensor based orientation** through settings **sensor based device rotation will be
+> ignored**. If not by default sensor based orientation will be taken into account and the
+> orientation will changed based on how the user rotates the device.
+
+| 系统方向锁定 | `SENSOR`（旧） | `UNSPECIFIED`（新） |
+|---|---|---|
+| 关（允许自动旋转） | 跟传感器 | 跟传感器 —— **两者一致** |
+| 开（锁定） | **仍跟传感器** ❌ | 跟随当前锁定方向 ✅ |
+
+两者只在锁定**开着**时才有区别，所以这个 bug 平时不出现，只有锁着方向看视频才暴露。
+
+### 28.3 修法
+
+`OrientationMode.activityOrientation` 里 `FOLLOW` 一支换成 `SCREEN_ORIENTATION_UNSPECIFIED`，
+两个锁档（`SENSOR_LANDSCAPE` / `SENSOR_PORTRAIT`）**不动** —— 它们是用户在播放页里的显式选择，
+与系统开关无关，「躺床上锁横屏」仍然可用。
+
+同步改动：
+
+| 位置 | 内容 |
+|---|---|
+| `OrientationMode` 注释 | 写清两个常量的差别只在锁定打开时、以及为什么这次刻意反选 |
+| `OrientationMode.description` | 「方向跟随**手机**」→「方向跟随**系统**」（锁定算数时它跟的不是手机姿态） |
+| `PlayerScreen` 的 KDoc / 字段注释 / 副作用注释 | 去掉「这就是敢用 `SENSOR` 的前提」这类已失效的表述 |
+| `OrientationMode` 可见性 | `private` → `internal`，供单测钉住常量映射（同 `resolveHoldOutcome` 的做法） |
+| 新增 `OrientationModeTest` | 4 例：跟随态是 `UNSPECIFIED` 且不是 `SENSOR`、跟随态与两个锁档都不重合、两个锁档仍是传感器版、按钮循环顺序 |
+
+**为什么值得加单测**：这条判据在锁定关着时**看不出对错**（两种常量表现一致），
+只有锁着方向才分岔 —— 属于「改错了也不会有人立刻发现」的那一类。三行断言守住，成本极低。
+
+### 28.4 取舍
+
+- **锁着竖屏看横屏片不会自动横过来**：这是本改动的预期代价，也是需求本身要的语义。
+  想横屏就点顶栏那个按钮（走 `SENSOR_LANDSCAPE`），而不是让播放页替用户取消锁定。
+- **没有读系统开关做分支**：有人可能想「锁定开着但也允许横屏」。那样得去读
+  `Settings.System.ACCELEROMETER_ROTATION`（需要 `WRITE_SETTINGS` 之外的读权限、值可能过时），
+  而 `UNSPECIFIED` 就是系统为此提供的原生语义，交给系统判断比应用自己读靠谱。
+- **不持久化方向偏好**（§20.6 的旧账仍在）：每次进播放页都回到「跟随系统」。
+- **老设备 / 桌面模式**：Android 16（API 36）起大屏设备上系统可能忽略应用的方向请求
+  （见 `WindowManager.PROPERTY_COMPAT_IGNORE_REQUESTED_ORIENTATION`）—— 那是系统行为，
+  与本改动同向（都是「系统说了算」），不需要额外处理。
+
+### 28.5 验证
+
+- `:app:testDebugUnitTest :app:assembleDebug --offline` → **BUILD SUCCESSFUL**
+- 单测 **246 例全绿**（242 → 246，新增 `OrientationModeTest` 4 例），0 失败 0 错误
+- 产物 `app-debug.apk`（25,095,862 B）；逐 dex 搜到新文案「方向跟随系统」在 `classes15.dex`，
+  旧文案「方向跟随手机」已不在包内 —— 改动确实进包
+- 改动面：`app/.../ui/player/PlayerScreen.kt`、新增
+  `app/src/test/.../ui/player/OrientationModeTest.kt`
+- **零新依赖**、**DB 不变**（纯常量与文案改动）
