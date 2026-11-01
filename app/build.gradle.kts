@@ -13,8 +13,8 @@ android {
         applicationId = "com.solidplayer"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 12
-        versionName = "0.5.1-p10"
+        versionCode = 13
+        versionName = "0.5.2"
     }
 
     buildFeatures {
@@ -25,6 +25,10 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            // 正式包（release）改用 debug keystore 签名。
+            // 目的：让本地产出的 release APK 能直接安装验证（未签名 APK 装不上）。
+            // 注意：这只是「可安装的正式包」，不是可上架的商店签名 —— 上架请替换成正式 keystore。
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
