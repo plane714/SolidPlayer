@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -97,6 +98,7 @@ fun FolderDetailScreen(
 
     val openPlayer: (Long) -> Unit = remember(onOpenPlayer) { { onOpenPlayer(it) } }
     val openIdentify: (Long) -> Unit = remember { { viewModel.openIdentify(it) } }
+    val askDelete: (Long) -> Unit = remember { { viewModel.askDeleteOriginal(it) } }
 
     Scaffold(
         topBar = {
@@ -181,6 +183,7 @@ fun FolderDetailScreen(
                                 isNew = video.isNew(newSince),
                                 onPlay = openPlayer,
                                 onIdentify = openIdentify,
+                                onDeleteFile = askDelete,
                             )
                         }
                     }
@@ -216,7 +219,42 @@ fun FolderDetailScreen(
             onPick = viewModel::bindSearchEpisode,
             onDismiss = viewModel::dismissDialog,
         )
+
+        is LibraryDialog.DeleteOriginal -> DeleteOriginalDialog(
+            dialog = dialog,
+            onConfirm = viewModel::confirmDeleteOriginal,
+            onDismiss = viewModel::dismissDialog,
+        )
     }
+}
+
+/**
+ * 删除原文件的确认框：**必须点名文件**，且说明不可恢复 —— 这一下删的是磁盘上的真实视频，
+ * 不是库里的记录，误删只能靠用户自己找回来。
+ */
+@Composable
+private fun DeleteOriginalDialog(
+    dialog: LibraryDialog.DeleteOriginal,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("删除原文件？") },
+        text = {
+            Text(
+                "将删除本地视频文件「${dialog.fileName}」，并从设备中永久移除，无法恢复。",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("删除", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
 
 private const val CONTENT_VIDEO = "video-row"
@@ -252,8 +290,8 @@ private fun VideoCountBar(
 /**
  * 视频行：缩略图（含时长 / NEW 角标）+ 文件名 + 字幕角标 + 溢出菜单。
  *
- * 整行点击 = 播放（与旧媒体库一致：能少一次点击就少一次），
- * 溢出菜单里再给「识别」这个显式入口。
+ * 整行点击 = 播放（与旧媒体库一致：能少一次点击就少一次），所以溢出菜单里**不再重复放「播放」**；
+ * 菜单只留「识别」与「删除原文件」两个显式入口，删除会先弹窗确认。
  */
 @Composable
 private fun VideoRow(
@@ -261,6 +299,7 @@ private fun VideoRow(
     isNew: Boolean,
     onPlay: (Long) -> Unit,
     onIdentify: (Long) -> Unit,
+    onDeleteFile: (Long) -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -354,17 +393,17 @@ private fun VideoRow(
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 DropdownMenuItem(
-                    text = { Text("播放") },
-                    onClick = {
-                        menuOpen = false
-                        onPlay(video.id)
-                    },
-                )
-                DropdownMenuItem(
                     text = { Text("识别 / 手动匹配") },
                     onClick = {
                         menuOpen = false
                         onIdentify(video.id)
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("删除原文件", color = MaterialTheme.colorScheme.error) },
+                    onClick = {
+                        menuOpen = false
+                        onDeleteFile(video.id)
                     },
                 )
                 HorizontalDivider()

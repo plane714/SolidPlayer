@@ -39,4 +39,15 @@ sealed interface LibraryDialog {
         val expandedAnimeId: Long? = null,
         val error: String? = null,
     ) : LibraryDialog
+
+    /**
+     * 「删除原文件」确认弹窗。
+     *
+     * 删的是**磁盘上的真实视频**（不可恢复），不是库里的记录 —— 所以必须先弹窗确认，
+     * 且文案里要点名是哪个文件，避免用户看错行删错片。
+     */
+    data class DeleteOriginal(
+        val fileId: Long,
+        val fileName: String,
+    ) : LibraryDialog
 }

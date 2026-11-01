@@ -1,5 +1,7 @@
 package com.solidplayer.core.data.repository
 
+import android.content.ContentResolver
+import android.net.Uri
 import com.solidplayer.core.data.db.MatchType
 import com.solidplayer.core.data.db.MediaFileDao
 import com.solidplayer.core.data.db.MediaFileEntity
@@ -13,6 +15,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -29,6 +32,15 @@ data class DiscoverSummary(
     val degraded: Boolean,
 )
 
+/** 「删除原文件」的结果。 */
+sealed interface DeleteOriginalFileResult {
+    /** 磁盘上的文件已删除（或本来就不存在），对应的库记录也一并删掉了。 */
+    data object Deleted : DeleteOriginalFileResult
+
+    /** 删除失败：文件仍在磁盘上，库记录保留，[message] 直接展示给用户。 */
+    data class Failed(val message: String) : DeleteOriginalFileResult
+}
+
 /**
  * 自动发现的媒体库（T3 首页）。
  *
@@ -44,6 +56,7 @@ data class DiscoverSummary(
 class VideoLibraryRepository @Inject constructor(
     private val scanner: VideoScanner,
     private val mediaFileDao: MediaFileDao,
+    private val resolver: ContentResolver,
     @IoDispatcher private val io: CoroutineDispatcher,
 ) {
 
@@ -69,6 +82,57 @@ class VideoLibraryRepository @Inject constructor(
     /** 某个目录下的视频（图二列表）。 */
     fun observeFolderVideos(folderPath: String): Flow<List<MediaFileEntity>> =
         mediaFileDao.observeFolderVideos(folderPath)
+
+    /**
+     * 删除一个视频的**原始文件**（磁盘上的真实文件），成功后连带删掉库里的记录。
+     *
+     * 两条删除路径，顺序不能反：
+     * 1. **`content://` 优先走 `ContentResolver.delete`**：MediaStore 索引行与物理文件一起消失，
+     *    否则只删文件会留下一行「指向不存在路径」的幽灵记录（下次扫描前一直显示）；
+     * 2. **再用绝对路径 `File.delete` 兜底**：磁盘遍历来的 `file://`、或系统拒绝了 MediaStore
+     *    删除（如 Android 10 分区存储的 `RecoverableSecurityException`）时走这条。
+     *
+     * 只有**文件确认已不在磁盘上**才删库记录；删不动就原样保留，并把原因回给 UI，
+     * 绝不「库删了、文件还在」—— 那会让用户以为空间被释放了。
+     */
+    suspend fun deleteOriginalFile(id: Long): DeleteOriginalFileResult = withContext(io) {
+        val entity = mediaFileDao.findById(id)
+            ?: return@withContext DeleteOriginalFileResult.Failed("文件记录已不存在")
+
+        val uri = runCatching { Uri.parse(entity.uri) }.getOrNull()
+        var securityBlocked = false
+
+        // ① content://：让 MediaStore 同步它的索引
+        if (uri != null && uri.scheme == ContentResolver.SCHEME_CONTENT) {
+            val removed = runCatching { resolver.delete(uri, null, null) }
+                .getOrElse { error ->
+                    if (error is SecurityException) securityBlocked = true
+                    0
+                }
+            if (removed > 0) return@withContext deleteRowAndReport(id)
+        }
+
+        // ② 绝对路径兜底（documentId 对自动发现的行就是文件的绝对路径）
+        val path = entity.documentId?.takeIf { it.isNotBlank() }
+        if (path != null) {
+            val file = File(path)
+            if (!file.exists()) return@withContext deleteRowAndReport(id)
+            if (runCatching { file.delete() }.getOrDefault(false)) return@withContext deleteRowAndReport(id)
+        }
+
+        DeleteOriginalFileResult.Failed(
+            if (securityBlocked) {
+                "系统拒绝了删除请求，请先授予「所有文件访问」权限后重试"
+            } else {
+                "删除失败：文件可能被占用，或当前存储权限不允许写入"
+            },
+        )
+    }
+
+    private suspend fun deleteRowAndReport(id: Long): DeleteOriginalFileResult {
+        mediaFileDao.delete(id)
+        return DeleteOriginalFileResult.Deleted
+    }
 
     /** 当前是否有能力直接遍历共享存储（决定首页要不要提示「结果可能不全」）。 */
     fun canTraverse(): Boolean = scanner.canTraverse()

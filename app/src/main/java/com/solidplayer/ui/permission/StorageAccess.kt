@@ -71,6 +71,22 @@ object StorageAccess {
         ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) ==
             PackageManager.PERMISSION_GRANTED
 
+    /**
+     * API ≤ 29 需要在应用内申请的权限。
+     *
+     * Android 9（API 28）及以下删文件还走 `java.io.File`，光有 READ 删不掉，必须一起要 WRITE；
+     * Android 10 起 WRITE 已无意义（分区存储 + MediaStore），只申请 READ 即可。
+     */
+    fun legacyPermissions(): Array<String> =
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            )
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+
     /** 跳到系统的「所有文件访问」授权页，优先直接落到本应用的条目上。 */
     fun allFilesSettingsIntent(context: Context): Intent =
         Intent(
@@ -99,9 +115,10 @@ fun StorageAccessGate(content: @Composable () -> Unit) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // 用「多权限」契约而不是单个：API ≤ 28 要同时申请 READ + WRITE（见 legacyPermissions）。
     val readPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { result -> granted = result }
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { granted = StorageAccess.granted(context) }
 
     if (granted) {
         content()
@@ -118,7 +135,7 @@ fun StorageAccessGate(content: @Composable () -> Unit) {
                     runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
                 }
             } else {
-                readPermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+                readPermissionLauncher.launch(StorageAccess.legacyPermissions())
             }
         },
     )

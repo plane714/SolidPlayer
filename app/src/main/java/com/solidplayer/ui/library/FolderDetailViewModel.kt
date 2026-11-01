@@ -12,6 +12,7 @@ import com.solidplayer.core.data.network.dto.MatchResultV2
 import com.solidplayer.core.data.network.dto.SearchEpisodeDetails
 import com.solidplayer.core.data.network.dto.SearchEpisodesAnime
 import com.solidplayer.core.data.parser.FileNameParser
+import com.solidplayer.core.data.repository.DeleteOriginalFileResult
 import com.solidplayer.core.data.repository.LibraryIdentifyCoordinator
 import com.solidplayer.core.data.repository.MatchOutcome
 import com.solidplayer.core.data.repository.MatchRepository
@@ -141,6 +142,31 @@ class FolderDetailViewModel @Inject constructor(
                 onFailure = { "扫描失败：${it.message ?: it.javaClass.simpleName}" },
             )
             _state.update { it.copy(scanning = false, message = text) }
+        }
+    }
+
+    // ── 删除原文件 ────────────────────────────────────────────────
+
+    /** 先弹确认框 —— 删的是磁盘上的真实视频，不可恢复，不能只凭菜单一点就删。 */
+    fun askDeleteOriginal(fileId: Long) {
+        val entity = _state.value.videos.firstOrNull { it.id == fileId } ?: return
+        _state.update {
+            it.copy(dialog = LibraryDialog.DeleteOriginal(fileId = fileId, fileName = entity.displayName))
+        }
+    }
+
+    /** 确认删除：先关弹窗，再真正删盘；结果用一次性 snackbar 告知，行会随 Room Flow 自动消失。 */
+    fun confirmDeleteOriginal() {
+        val dialog = _state.value.dialog as? LibraryDialog.DeleteOriginal ?: return
+        _state.update { it.copy(dialog = null) }
+        viewModelScope.launch {
+            when (val result = repository.deleteOriginalFile(dialog.fileId)) {
+                DeleteOriginalFileResult.Deleted ->
+                    _state.update { it.copy(message = "已删除：${dialog.fileName}") }
+
+                is DeleteOriginalFileResult.Failed ->
+                    _state.update { it.copy(message = "删除失败：${result.message}") }
+            }
         }
     }
 

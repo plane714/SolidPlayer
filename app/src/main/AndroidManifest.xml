@@ -25,6 +25,14 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!--
+        「删除原文件」在 API ≤ 28 需要写权限：那个年代分区存储还没生效，删共享目录里的文件
+        仍走 java.io.File，只有 READ 是删不掉的。API 29 起改走 MediaStore / 所有文件访问，
+        这个权限不再适用，所以用 maxSdkVersion 收口。
+    -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
     <!--

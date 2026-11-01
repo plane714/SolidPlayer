@@ -2467,4 +2467,54 @@ P8 把弹菜单只写在 `onDragCancel` 里，于是那段代码在执行路径�
   旧文案「方向跟随手机」已不在包内 —— 改动确实进包
 - 改动面：`app/.../ui/player/PlayerScreen.kt`、新增
   `app/src/test/.../ui/player/OrientationModeTest.kt`
+
+---
+
+## 29. 文件夹详情：溢出菜单「删除原文件」（2026-11-01，P11）
+
+### 29.1 需求
+
+> 文件夹列表，每个视频文件右边不是有三个点吗，点击展开后，去掉播放按钮，添加一个删除原文件按钮，
+> 点击后弹窗提示将会删除本地文件（确认/取消）
+
+### 29.2 落地
+
+| 位置 | 改动 |
+|---|---|
+| `FolderDetailScreen.VideoRow` | 溢出菜单移除「播放」（整行点击已是播放入口，重复一次没有意义）；新增「删除原文件」，文字用 `colorScheme.error` |
+| `LibraryDialog.DeleteOriginal` | 新的弹窗状态：`fileId` + `fileName` |
+| `FolderDetailScreen.DeleteOriginalDialog` | 标题「删除原文件？」，正文点名文件并说明永久删除、不可恢复；按钮「删除 / 取消」 |
+| `FolderDetailViewModel` | `askDeleteOriginal(fileId)` 打开确认框；`confirmDeleteOriginal()` 关框后调用仓库，结果用一次性 snackbar 告知 |
+| `VideoLibraryRepository.deleteOriginalFile(id)` | 真正删盘 + 删库，见下 |
+
+`deleteOriginalFile` 的删除顺序：
+
+1. **`content://` 优先走 `ContentResolver.delete`** —— MediaStore 索引行和物理文件一起删掉，
+   否则只删文件会留下指向不存在路径的幽灵记录；
+2. **绝对路径 `File.delete` 兜底** —— 磁盘遍历来的 `file://`、以及系统拒绝 MediaStore 删除
+   （Android 10 的 `RecoverableSecurityException`）时走这条；
+3. **只有确认文件已不在磁盘上才删库记录**；删不动就保留记录并把原因回给 UI，
+   绝不允许「库删了、文件还在」。
+4. 删除成功后行会随 `observeFolderVideos` 的 Room Flow 自动消失，文件夹聚合也随之更新。
+
+权限：`AndroidManifest.xml` 新增 `WRITE_EXTERNAL_STORAGE`（`maxSdkVersion=28`）——
+API ≤ 28 删共享目录文件仍走 `java.io.File`，只有 READ 删不掉；`StorageAccess` 在 API ≤ 28
+改为一次申请 READ + WRITE（`RequestMultiplePermissions`）。API 30+ 由「所有文件访问」覆盖。
+
+### 29.3 取舍
+
+- **不处理 Android 10 的 `RecoverableSecurityException` 二次授权**：那需要把 `IntentSender`
+  接进 ActivityResult 链路，属于该版本分区存储死角的一部分；当前直接提示权限原因，
+  API 30+ 的常用机型不受影响。
+- **不清理弹幕缓存**：缓存按 `episodeId` 共享，同一集可能还有别的文件在用。
+- **不主动删缩略图缓存**：纯派生数据，交给容量修剪即可。
+
+### 29.4 验证
+
+- `:app:testDebugUnitTest :app:assembleDebug --offline` → **BUILD SUCCESSFUL**
+- `test --offline`（全部模块）→ **BUILD SUCCESSFUL**，0 失败
+- 改动面：`app/.../ui/library/{FolderDetailScreen,FolderDetailViewModel,LibraryDialog}.kt`、
+  `core/data/.../repository/VideoLibraryRepository.kt`、`app/.../ui/permission/StorageAccess.kt`、
+  `app/src/main/AndroidManifest.xml`
+- DB / schema 不变，零新依赖。
 - **零新依赖**、**DB 不变**（纯常量与文案改动）
