@@ -9,7 +9,7 @@ import android.util.LruCache
 import android.util.Size
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Movie
@@ -26,17 +26,28 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 
 /** 抽帧位置：第 1 秒。很多视频首帧是黑场，取第 0 帧的缩略图常常是一片黑。 */
 private const val FRAME_AT_US = 1_000_000L
 
 /**
- * 视频缩略图缓存。
+ * 缩略图缓存键：`uri@宽x高`。
+ *
+ * 必须带上尺寸：缩略图是**按显示尺寸**抽的，同一个视频在列表（小图）和别处（大图）
+ * 用同一把键的话，先缓存的小图会被后一次请求直接命中，结果就是「越大越糊」。
+ */
+internal fun thumbnailCacheKey(uriString: String, widthPx: Int, heightPx: Int): String =
+    "$uriString@${widthPx}x$heightPx"
+
+/**
+ * 视频缩略图的**内存** LRU 缓存（磁盘那层见 [ThumbnailCacheStore]）。
  *
  * 为什么要自己写一个：项目是**离线构建**，Gradle 缓存里没有 Coil / Glide，加依赖直接构建失败；
  * 而这里需要的也只是「给一个 uri 要一张小图」，平台 API 就够了。
@@ -54,8 +65,8 @@ object VideoThumbnailCache {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
-    /** 取过且拿不到的 uri：记下来，别再试。 */
-    private val failed = HashSet<String>()
+    /** 取过且拿不到的 uri：记下来，别再试。并发抽帧下用并发集合，避免 HashSet 并发写坏。 */
+    private val failed: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     fun get(key: String): Bitmap? = cache.get(key)
 
@@ -89,49 +100,60 @@ private val decodeGate = Semaphore(2)
 /**
  * 抽一帧当缩略图。
  *
+ * 取值顺序：内存 LRU → 磁盘缓存 → 实际解码，解码后同时回填内存与磁盘。
+ *
  * 优先 `ContentResolver.loadThumbnail`（API 29+）：系统维护好的缩略图库，
  * 命中时是纯文件读取，比解一遍视频容器快一个数量级 —— 但它**只认 `content://`**，
  * 磁盘遍历分支持有的是 `file://`，那种只能退回去抽帧。
  *
- * ⚠️ 两条分支交出来的图**必须都接近显示尺寸**：缓存的容量是按像素字节数算的
- * （对象内部的 `MAX_BYTES` 是 24MB），混进一张 1080p 的整帧就相当于占掉 30 多个名额。
- * `loadThumbnail` 自己会按 `Size` 缩，抽帧那条要在 [frameAt] 里自己缩。
+ * ⚠️ 两条分支交出来的图都会被 [coverCrop] 裁成**恰好等于显示盒子**的尺寸：
+ * 缓存的容量是按像素字节数算的（对象内部的 `MAX_BYTES` 是 24MB），混进一张 1080p 的
+ * 整帧就相当于占掉 30 多个名额，必须在这里收口。
  */
 suspend fun loadVideoThumbnail(
     context: Context,
+    store: ThumbnailCacheStore,
     uriString: String,
     widthPx: Int,
     heightPx: Int,
 ): Bitmap? = withContext(Dispatchers.IO) {
     if (uriString.isBlank() || widthPx <= 0 || heightPx <= 0) return@withContext null
-    VideoThumbnailCache.get(uriString)?.let { return@withContext it }
-    if (VideoThumbnailCache.isKnownFailure(uriString)) return@withContext null
+    val key = thumbnailCacheKey(uriString, widthPx, heightPx)
+    VideoThumbnailCache.get(key)?.let { return@withContext it }
+    if (VideoThumbnailCache.isKnownFailure(key)) return@withContext null
 
     val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return@withContext null
     val bitmap = decodeGate.withPermit {
-        runCatching {
+        // 磁盘缓存命中：纯文件读取，比重新解一遍视频容器快得多。
+        store.read(key) ?: runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri.scheme != "file") {
-                context.contentResolver.loadThumbnail(uri, Size(widthPx, heightPx), null)
+                // 请求一个「至少两倍盒子」的正方形，而不是精确的 width×height：
+                // `loadThumbnail` 按**等比内接**生成，若直接要 372×210，竖屏视频只能拿到
+                // 118×210 这种「宽不够」的小图，再被 Crop 拉大就发虚。给足余量后由下面的
+                // [coverCrop] 自己裁成盒子尺寸，横竖屏都能拿到足够像素。
+                val edge = maxOf(widthPx, heightPx) * 2
+                context.contentResolver.loadThumbnail(uri, Size(edge, edge), null)
             } else {
-                frameAt(context, uri, widthPx, heightPx)
+                frameAt(context, uri)
             }
-        }.getOrNull()
+        }.getOrNull()?.let { decoded ->
+            // 统一收口：裁成「恰好等于显示盒子」的图。这样上层的 ContentScale.Crop 不再需要
+            // 放大，既清晰又把每张图的字节数固定在一个可预期的量级（LRU 才好按字节算容量）。
+            val cropped = coverCrop(decoded, widthPx, heightPx)
+            store.write(key, cropped)
+            cropped
+        }
     }
 
     if (bitmap == null) {
-        VideoThumbnailCache.markFailed(uriString)
+        VideoThumbnailCache.markFailed(key)
         return@withContext null
     }
-    // 两条分支都统一在这里再收一次口：`loadThumbnail` 通常已按 `Size` 缩好，但不同 ROM 的
-    // 实现、以及请求尺寸小于系统缩略图下限时都可能给出更大的图 ——
-    // 「进缓存的图必须接近显示尺寸」这条不变量不能在两个分支里各写一遍。
-    // 已经够小的图会原样返回，不产生额外拷贝。
-    val cached = downscale(bitmap, widthPx, heightPx)
-    VideoThumbnailCache.put(uriString, cached)
-    cached
+    VideoThumbnailCache.put(key, bitmap)
+    bitmap
 }
 
-private fun frameAt(context: Context, uri: Uri, widthPx: Int, heightPx: Int): Bitmap? {
+private fun frameAt(context: Context, uri: Uri): Bitmap? {
     val retriever = MediaMetadataRetriever()
     return try {
         if (uri.scheme == "file") {
@@ -140,12 +162,8 @@ private fun frameAt(context: Context, uri: Uri, widthPx: Int, heightPx: Int): Bi
             retriever.setDataSource(context, uri)
         }
         // 取第 1 秒：很多视频首帧是黑场，缩略图会是一片黑
-        val frame = retriever.getFrameAtTime(FRAME_AT_US, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        retriever.getFrameAtTime(FRAME_AT_US, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
             ?: retriever.frameAtTime
-            ?: return null
-        // `getFrameAtTime` 交出来的是**整张关键帧**（1080p 一张 ≈ 8MB，4K 更多），
-        // 直接缓存会让 24MB 的 LRU 只装得下两三条 —— 缩到显示尺寸再交出去。
-        downscale(frame, widthPx, heightPx)
     } catch (_: Exception) {
         null
     } finally {
@@ -154,50 +172,67 @@ private fun frameAt(context: Context, uri: Uri, widthPx: Int, heightPx: Int): Bi
 }
 
 /**
- * 等比缩到不超过 [widthPx] × [heightPx]。
+ * 把整帧裁成**恰好** [widthPx] × [heightPx]。
  *
- * 用**等比**而不是撑满：竖屏视频撑进 16:9 的盒子会被压扁，而这里没有编解码信息
- * 可以拿来算裁切（裁切交给上层的 `ContentScale.Crop` 做，它至少是按比例裁）。
+ * 先等比缩放到「刚好盖满」盒子（取 max 比例），再从中心裁掉多余的一条边。
+ * 这样得到的图与列表里 `ContentScale.Crop` 的最终显示效果一致，但由我们提前裁好，
+ * 显示时不再发生二次放大 —— 竖屏视频塞进 16:9 盒子也不会糊。
+ *
+ * 注意缩放用的中间图可能是几十 MB 的整帧，裁完就回收，别等 GC。
  */
-private fun downscale(source: Bitmap, widthPx: Int, heightPx: Int): Bitmap {
-    val scale = minOf(widthPx.toFloat() / source.width, heightPx.toFloat() / source.height)
-    if (scale >= 1f) return source
-    val target = Bitmap.createScaledBitmap(
-        source,
-        (source.width * scale).roundToInt().coerceAtLeast(1),
-        (source.height * scale).roundToInt().coerceAtLeast(1),
-        true,
+private fun coverCrop(source: Bitmap, widthPx: Int, heightPx: Int): Bitmap {
+    val scale = maxOf(
+        widthPx.toFloat() / source.width,
+        heightPx.toFloat() / source.height,
     )
-    // 原图是几十 MB 的整帧，缩完立刻放掉，别等 GC
-    if (target !== source) source.recycle()
-    return target
+    val scaledWidth = (source.width * scale).roundToInt().coerceAtLeast(widthPx)
+    val scaledHeight = (source.height * scale).roundToInt().coerceAtLeast(heightPx)
+    val scaled = if (scaledWidth == source.width && scaledHeight == source.height) {
+        source
+    } else {
+        Bitmap.createScaledBitmap(source, scaledWidth, scaledHeight, true)
+    }
+    val left = ((scaledWidth - widthPx) / 2).coerceAtLeast(0)
+    val top = ((scaledHeight - heightPx) / 2).coerceAtLeast(0)
+    val cropped = Bitmap.createBitmap(scaled, left, top, widthPx, heightPx)
+    if (cropped !== scaled) scaled.recycle()
+    if (source !== scaled && source !== cropped) source.recycle()
+    return cropped
 }
 
 /**
  * 列表里的缩略图。拿不到就退化成一块深色底 + 胶片图标，**不留白**——
  * 留白会让整列行高看起来参差不齐。
+ *
+ * 抽帧尺寸**按组件实际占用的像素来**（[BoxWithConstraints] + 屏幕密度），不再写死
+ * 320×180：高密度屏上一个 124dp×70dp 的盒子有 400 多像素宽，按 320 抽出来的图放大后
+ * 必然发虚。按显示尺寸抽帧，既清晰又不会浪费内存。
  */
 @Composable
 fun VideoThumbnail(
     uri: String,
     modifier: Modifier = Modifier,
-    widthPx: Int = 320,
-    heightPx: Int = 180,
     contentDescription: String? = null,
 ) {
     val context = LocalContext.current
-    var bitmap by remember(uri) { mutableStateOf(VideoThumbnailCache.get(uri)) }
+    val store = rememberThumbnailCacheStore()
 
-    LaunchedEffect(uri) {
-        if (bitmap == null) {
-            bitmap = loadVideoThumbnail(context, uri, widthPx, heightPx)
-        }
-    }
-
-    Box(
+    BoxWithConstraints(
         modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center,
     ) {
+        val density = LocalDensity.current
+        val widthPx = with(density) { maxWidth.roundToPx() }.coerceAtLeast(1)
+        val heightPx = with(density) { maxHeight.roundToPx() }.coerceAtLeast(1)
+        val key = thumbnailCacheKey(uri, widthPx, heightPx)
+        var bitmap by remember(key) { mutableStateOf(VideoThumbnailCache.get(key)) }
+
+        LaunchedEffect(key) {
+            if (bitmap == null) {
+                bitmap = loadVideoThumbnail(context, store, uri, widthPx, heightPx)
+            }
+        }
+
         val image = bitmap
         if (image == null) {
             Icon(

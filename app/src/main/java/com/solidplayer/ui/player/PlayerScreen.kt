@@ -53,11 +53,13 @@ import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.StayCurrentLandscape
 import androidx.compose.material.icons.filled.StayCurrentPortrait
+import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -102,6 +104,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.CaptionStyleCompat
@@ -111,8 +114,10 @@ import com.solidplayer.core.danmaku.model.DanmakuTimeline
 import com.solidplayer.core.danmaku.render.DanmakuView
 import com.solidplayer.core.data.preference.DanmakuPreferenceCodec
 import com.solidplayer.core.data.preference.DanmakuPreferences
+import com.solidplayer.core.data.preference.SubtitleLanguage
 import com.solidplayer.core.data.preference.SubtitlePreferenceCodec
 import com.solidplayer.core.data.preference.SubtitlePreferences
+import com.solidplayer.core.player.EmbeddedSubtitleTrack
 import com.solidplayer.core.player.SolidPlayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
@@ -312,6 +317,17 @@ fun PlayerScreen(
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var speedMenuOpen by remember { mutableStateOf(false) }
+
+    /**
+     * 当前视频的**内嵌字幕轨道**列表 + 字幕轨道菜单展开状态。
+     *
+     * 字幕轨道来自视频容器本身（不是旁挂字幕文件），所以列表随 `onTracksChanged` 刷新 ——
+     * 换集（原地换源）后轨道会整体换掉，必须重新读一遍。
+     */
+    var subtitleTracks by remember { mutableStateOf<List<EmbeddedSubtitleTrack>>(emptyList()) }
+    var subtitleMenuOpen by remember { mutableStateOf(false) }
+    /** 本集是否已经按「默认字幕语言」自动套用过一次，避免用户手动关字幕后又被自动打开。 */
+    var subtitleAutoApplied by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -421,6 +437,11 @@ fun PlayerScreen(
             override fun onVideoSizeChanged(videoSize: VideoSize) {
                 if (videoSize.width > 0 && videoSize.height > 0) videoSized = true
             }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                // 每次轨道可用性变化（起播 / 换集 / 手动切轨）都重读一遍内嵌字幕轨列表。
+                subtitleTracks = solidPlayer.embeddedSubtitleTracks()
+            }
         }
         player.addListener(listener)
         player.safeDuration().takeIf { it > 0L }?.let { durationMs = it }
@@ -497,6 +518,28 @@ fun PlayerScreen(
     // 所以在设置面板里拖字号滑杆时，画面上的字幕是**即时**跟着变的。
     LaunchedEffect(playerView, state.subtitlePrefs) {
         playerView?.applySubtitleStyle(state.subtitlePrefs)
+    }
+
+    // ── 默认字幕语言：每集只自动套用一次 ────────────────────────────
+    //
+    // 轨道列表在起播后由 `onTracksChanged` 填充。本集第一次拿到非空轨道列表时，
+    // 按「默认字幕语言」找一条匹配的轨道选中；一条都对不上就保持播放器默认
+    // （通常是第一条，也可能是无字幕），不去强行关掉视频自带的字幕。
+    //
+    // 用一个「本集是否已套用」的标记兜住重复触发：用户手动关掉字幕后，
+    // 不应因为后续一次 onTracksChanged 又把它自动打开。换集时随 uri 重置。
+    LaunchedEffect(state.uri) {
+        subtitleAutoApplied = false
+    }
+    LaunchedEffect(subtitleTracks, state.subtitlePrefs.defaultLanguage, subtitleAutoApplied) {
+        if (subtitleAutoApplied || subtitleTracks.isEmpty()) return@LaunchedEffect
+        val language = state.subtitlePrefs.defaultLanguage
+        val match = subtitleTracks.firstOrNull { language.matches(it.language) }
+        if (match != null && !match.selected) {
+            solidPlayer.selectSubtitleTrack(match.indexInGroup)
+        }
+        // 无论是否命中都标记为已处理：命中就固定住，没命中就尊重播放器默认选择。
+        subtitleAutoApplied = true
     }
 
     LaunchedEffect(engine, state.offsetMs) {
@@ -742,6 +785,8 @@ fun PlayerScreen(
                 episodeLabel = state.episodeLabel,
                 speed = state.speed,
                 speedMenuOpen = speedMenuOpen,
+                subtitleTracks = subtitleTracks,
+                subtitleMenuOpen = subtitleMenuOpen,
                 hasNext = state.nextEpisodeId != null,
                 nextEpisodeTitle = state.nextEpisodeTitle,
                 onScrub = { scrubbing = it },
@@ -754,6 +799,16 @@ fun PlayerScreen(
                 onTogglePlay = togglePlayPause,
                 onToggleDanmaku = viewModel::toggleDanmaku,
                 onOpenSettings = { showSettings = true },
+                onSubtitleMenuOpenChange = { subtitleMenuOpen = it },
+                onSubtitleTrackSelected = { index ->
+                    solidPlayer.selectSubtitleTrack(index)
+                    // 手动选择后不再接受自动套用，尊重用户的显式表达
+                    subtitleAutoApplied = true
+                },
+                onSubtitleOff = {
+                    solidPlayer.disableSubtitles()
+                    subtitleAutoApplied = true
+                },
                 onNextEpisode = goToNextEpisode,
                 onSpeedMenuOpenChange = { speedMenuOpen = it },
                 onSpeedSelected = viewModel::setSpeed,
@@ -980,6 +1035,8 @@ private fun PlayerBottomBar(
     episodeLabel: String?,
     speed: Float,
     speedMenuOpen: Boolean,
+    subtitleTracks: List<EmbeddedSubtitleTrack>,
+    subtitleMenuOpen: Boolean,
     hasNext: Boolean,
     nextEpisodeTitle: String?,
     onScrub: (Float) -> Unit,
@@ -987,6 +1044,9 @@ private fun PlayerBottomBar(
     onTogglePlay: () -> Unit,
     onToggleDanmaku: () -> Unit,
     onOpenSettings: () -> Unit,
+    onSubtitleMenuOpenChange: (Boolean) -> Unit,
+    onSubtitleTrackSelected: (Int) -> Unit,
+    onSubtitleOff: () -> Unit,
     onNextEpisode: () -> Unit,
     onSpeedMenuOpenChange: (Boolean) -> Unit,
     onSpeedSelected: (Float) -> Unit,
@@ -1059,6 +1119,14 @@ private fun PlayerBottomBar(
                 )
             }
             DanmakuToggle(enabled = danmakuEnabled, compact = compact, onClick = onToggleDanmaku)
+            SubtitleTrackButton(
+                tracks = subtitleTracks,
+                expanded = subtitleMenuOpen,
+                compact = compact,
+                onExpandedChange = onSubtitleMenuOpenChange,
+                onTrackSelected = onSubtitleTrackSelected,
+                onSubtitleOff = onSubtitleOff,
+            )
             IconButton(onClick = onOpenSettings, modifier = Modifier.size(iconButtonSize)) {
                 Icon(
                     imageVector = Icons.Filled.Tune,
@@ -1194,6 +1262,80 @@ private fun DanmakuToggle(enabled: Boolean, compact: Boolean, onClick: () -> Uni
             color = if (enabled) Color.White else Color(0x99FFFFFF),
             fontSize = if (compact) 12.sp else 13.sp,
         )
+    }
+}
+
+/**
+ * 字幕轨道选择按钮：列出**内嵌字幕轨道**（视频容器自带）+ 一个「关闭字幕」项。
+ *
+ * 为什么放底栏而不是设置面板：字幕轨是「这一集就选一次」的动作，和倍速、下一集同级；
+ * 而设置面板里管的是**样式**（字号 / 描边），是跨集通用的偏好，两者语义不同。
+ *
+ * 轨道为空（视频没有内嵌字幕）时按钮**仍然可点**，菜单里只给一句「本视频没有内嵌字幕」——
+ * 而不是把按钮置灰：置灰会让用户以为「功能坏了」，点开看到说明才知道是片源本身没有。
+ */
+@Composable
+private fun SubtitleTrackButton(
+    tracks: List<EmbeddedSubtitleTrack>,
+    expanded: Boolean,
+    compact: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onTrackSelected: (Int) -> Unit,
+    onSubtitleOff: () -> Unit,
+) {
+    // 有任一条轨道被选中 → 认为字幕是「开」的，用强调色；否则用暗色
+    val active = tracks.any { it.selected }
+    val tint = if (active) Accent else Color(0x99FFFFFF)
+    Box {
+        TextButton(
+            onClick = { onExpandedChange(true) },
+            contentPadding = toggleContentPadding(compact),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Subtitles,
+                contentDescription = "选择字幕轨道",
+                tint = tint,
+                modifier = Modifier.size(if (compact) 16.dp else 18.dp),
+            )
+            Spacer(Modifier.width(if (compact) 2.dp else 4.dp))
+            Text(
+                text = "字幕",
+                color = if (active) Color.White else Color(0x99FFFFFF),
+                fontSize = if (compact) 12.sp else 13.sp,
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
+            if (tracks.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("本视频没有内嵌字幕") },
+                    enabled = false,
+                    onClick = {},
+                )
+            } else {
+                tracks.forEach { track ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = track.label,
+                                color = if (track.selected) Accent else MaterialTheme.colorScheme.onSurface,
+                            )
+                        },
+                        onClick = {
+                            onTrackSelected(track.indexInGroup)
+                            onExpandedChange(false)
+                        },
+                    )
+                }
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("关闭字幕") },
+                    onClick = {
+                        onSubtitleOff()
+                        onExpandedChange(false)
+                    },
+                )
+            }
+        }
     }
 }
 
