@@ -32,4 +32,7 @@ dist/
 # 临时文件
 .workbuddy/tmp/
 *.log
+
+# 本地工作记忆（仅留本地，不入库）
+.workbuddy/memory/
 .DS_Store
